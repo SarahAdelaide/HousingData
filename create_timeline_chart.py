@@ -1,10 +1,12 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from matplotlib.backends.backend_pdf import PdfPages
 from datetime import datetime
 import sys
 import os
 import re
+import numpy as np
 
 def extract_date(date_value):
     """Extract date string, trying to parse various formats."""
@@ -123,90 +125,102 @@ def create_timeline_chart(timeline_csv, output_path=None):
         print("No BINs with complete timelines found. Creating chart with available data...")
         complete_timelines = df_timelines.copy()
     
-    # Sort by BIN for consistent ordering
-    complete_timelines = complete_timelines.sort_values('BIN')
+    # Sort by first DOB application date (DOB_Submitted)
+    complete_timelines = complete_timelines.sort_values('DOB_Submitted', na_position='last')
+    print(f"Sorted {len(complete_timelines)} BINs by first DOB application date\n")
     
-    # Limit to reasonable number for visualization (too many will be unreadable)
-    max_bins = 50
-    if len(complete_timelines) > max_bins:
-        print(f"Limiting to first {max_bins} BINs for readability...")
-        complete_timelines = complete_timelines.head(max_bins)
+    # Number of BINs per page
+    bins_per_page = 25
     
-    # Create the chart
-    print("\nCreating timeline chart...")
-    fig, ax = plt.subplots(figsize=(14, max(8, len(complete_timelines) * 0.3)))
+    # Create multi-page PDF chart
+    print("\nCreating multi-page timeline chart...")
     
-    # Calculate positions for each BIN
-    y_positions = range(len(complete_timelines))
-    
-    # Plot DOB timeline bars
-    dob_bars = []
-    hpd_bars = []
-    
-    for idx, (i, row) in enumerate(complete_timelines.iterrows()):
-        y_pos = len(complete_timelines) - idx - 1
-        
-        # DOB timeline bar
-        if pd.notna(row['DOB_Submitted']) and pd.notna(row['DOB_Approved']):
-            dob_start = row['DOB_Submitted']
-            dob_end = row['DOB_Approved']
-            dob_duration = (dob_end - dob_start).days
-            dob_bars.append((y_pos, dob_start, dob_end, dob_duration))
-        
-        # HPD timeline bar
-        if pd.notna(row['HPD_Submitted']) and pd.notna(row['HPD_Completed']):
-            hpd_start = row['HPD_Submitted']
-            hpd_end = row['HPD_Completed']
-            hpd_duration = (hpd_end - hpd_start).days
-            hpd_bars.append((y_pos, hpd_start, hpd_end, hpd_duration))
-    
-    # Plot DOB bars (blue) - offset slightly up
-    dob_labeled = False
-    for y_pos, start, end, duration in dob_bars:
-        label = 'DOB Application Timeline' if not dob_labeled else ''
-        ax.barh(y_pos + 0.2, duration, left=start, height=0.35, color='#2E86AB', alpha=0.7, label=label)
-        if not dob_labeled:
-            dob_labeled = True
-    
-    # Plot HPD bars (green) - offset slightly down
-    hpd_labeled = False
-    for y_pos, start, end, duration in hpd_bars:
-        label = 'HPD Financing Timeline' if not hpd_labeled else ''
-        ax.barh(y_pos - 0.2, duration, left=start, height=0.35, color='#A23B72', alpha=0.7, label=label)
-        if not hpd_labeled:
-            hpd_labeled = True
-    
-    # Set y-axis labels
-    labels = []
-    for idx, (i, row) in enumerate(complete_timelines.iterrows()):
-        bin_str = str(int(row['BIN'])) if pd.notna(row['BIN']) else 'N/A'
-        address = str(row['Address'])[:40] if pd.notna(row['Address']) else 'N/A'
-        labels.append(f"{bin_str}\n{address}")
-    
-    ax.set_yticks(y_positions)
-    ax.set_yticklabels(labels, fontsize=8)
-    ax.invert_yaxis()  # Top to bottom
-    
-    # Format x-axis as dates
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax.xaxis.set_major_locator(mdates.YearLocator())
-    plt.xticks(rotation=45, ha='right')
-    
-    # Labels and title
-    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
-    ax.set_title('Timeline Chart: DOB Application vs HPD Financing\nby BIN', 
-                 fontsize=14, fontweight='bold', pad=20)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3, axis='x')
-    
-    plt.tight_layout()
-    
-    # Save the chart
+    # Determine output path
     if output_path is None:
-        output_path = timeline_csv.replace('.csv', '_timeline_chart.png')
+        output_path = timeline_csv.replace('.csv', '_timeline_chart.pdf')
+    elif not output_path.endswith('.pdf'):
+        output_path = output_path.replace('.png', '.pdf')
     
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"\nChart saved to: {output_path}")
+    # Calculate number of pages needed
+    total_bins = len(complete_timelines)
+    num_pages = int(np.ceil(total_bins / bins_per_page))
+    
+    print(f"Creating {num_pages} page(s) with up to {bins_per_page} BINs per page...")
+    
+    # Create PDF
+    with PdfPages(output_path) as pdf:
+        for page_num in range(num_pages):
+            start_idx = page_num * bins_per_page
+            end_idx = min(start_idx + bins_per_page, total_bins)
+            page_data = complete_timelines.iloc[start_idx:end_idx].copy()
+            
+            # Create figure for this page
+            fig, ax = plt.subplots(figsize=(14, max(8, len(page_data) * 0.35)))
+            
+            # Calculate positions for each BIN on this page
+            y_positions = range(len(page_data))
+            
+            # Plot timeline segments - one line per BIN with overlapping segments
+            dob_labeled = False
+            hpd_labeled = False
+            
+            for idx, (i, row) in enumerate(page_data.iterrows()):
+                y_pos = len(page_data) - idx - 1
+                
+                # DOB timeline segment (blue)
+                if pd.notna(row['DOB_Submitted']) and pd.notna(row['DOB_Approved']):
+                    dob_start = row['DOB_Submitted']
+                    dob_end = row['DOB_Approved']
+                    dob_duration = (dob_end - dob_start).days
+                    label = 'DOB Application Timeline' if not dob_labeled else ''
+                    ax.barh(y_pos, dob_duration, left=dob_start, height=0.6, 
+                           color='#2E86AB', alpha=0.8, label=label, edgecolor='#1a5d7a', linewidth=0.5)
+                    if not dob_labeled:
+                        dob_labeled = True
+                
+                # HPD timeline segment (purple) - can overlap with DOB
+                if pd.notna(row['HPD_Submitted']) and pd.notna(row['HPD_Completed']):
+                    hpd_start = row['HPD_Submitted']
+                    hpd_end = row['HPD_Completed']
+                    hpd_duration = (hpd_end - hpd_start).days
+                    label = 'HPD Financing Timeline' if not hpd_labeled else ''
+                    ax.barh(y_pos, hpd_duration, left=hpd_start, height=0.6, 
+                           color='#A23B72', alpha=0.8, label=label, edgecolor='#7a2b55', linewidth=0.5)
+                    if not hpd_labeled:
+                        hpd_labeled = True
+            
+            # Set y-axis labels
+            labels = []
+            for idx, (i, row) in enumerate(page_data.iterrows()):
+                bin_str = str(int(row['BIN'])) if pd.notna(row['BIN']) else 'N/A'
+                address = str(row['Address'])[:50] if pd.notna(row['Address']) else 'N/A'
+                labels.append(f"{bin_str}\n{address}")
+            
+            ax.set_yticks(y_positions)
+            ax.set_yticklabels(labels, fontsize=7)
+            ax.invert_yaxis()  # Top to bottom
+            
+            # Format x-axis as dates
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            ax.xaxis.set_major_locator(mdates.YearLocator())
+            plt.xticks(rotation=45, ha='right')
+            
+            # Labels and title
+            ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+            title = f'Timeline Chart: DOB Application vs HPD Financing by BIN\n'
+            title += f'Page {page_num + 1} of {num_pages} | BINs {start_idx + 1}-{end_idx} of {total_bins}'
+            title += f'\n(Sorted by first DOB application date)'
+            ax.set_title(title, fontsize=13, fontweight='bold', pad=20)
+            ax.legend(loc='upper right', fontsize=9)
+            ax.grid(True, alpha=0.3, axis='x')
+            
+            plt.tight_layout()
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close()
+            
+            print(f"  Page {page_num + 1}/{num_pages} completed ({len(page_data)} BINs)")
+    
+    print(f"\nMulti-page chart saved to: {output_path}")
     
     # Also save the timeline data
     data_output = timeline_csv.replace('.csv', '_timeline_data.csv')
